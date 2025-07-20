@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator-deploy
+  namespace: smart-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      containers:
+        - name: simulator-container
+          image: yardenziv/smarthome_simulator:V45
+          resources:
+            limits:
+              cpu: 300m
+              memory: 200Mi
+            requests:
+              cpu: 200m
+              memory: 100Mi
+          env:
+            - name: API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-cm
+                  key: API_URL
+            - name: BROKER_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: mqtt-broker-cm
+                  key: BROKER_HOST
+            - name: BROKER_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: mqtt-broker-cm
+                  key: BROKER_PORT
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - cat status | grep healthy
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - cat status | grep ready
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1

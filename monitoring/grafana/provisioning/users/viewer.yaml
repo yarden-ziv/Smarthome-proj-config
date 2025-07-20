@@ -1,0 +1,8 @@
+users:
+  - name: Viewer
+    email: viewer@example.com
+    login: viewer
+    password: viewer
+    isAdmin: false
+    orgId: 1
+    role: Viewer

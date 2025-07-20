@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deploy
+  namespace: smart-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend-flask-container
+          image: yardenziv/smarthome_backend_flask:V45
+          resources:
+            limits:
+              cpu: 300m
+              memory: 200Mi
+            requests:
+              cpu: 200m
+              memory: 100Mi
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  key: MONGO_USER
+                  name: mongo-secrets
+            - name: MONGO_PASS
+              valueFrom:
+                secretKeyRef:
+                  key: MONGO_PASS
+                  name: mongo-secrets
+            - name: BROKER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: mqtt-broker-cm
+                  key: BROKER_HOST
+            - name: BROKER_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: mqtt-broker-cm
+                  key: BROKER_PORT
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+        - name: backend-nginx-container
+          image: yardenziv/smarthome_backend_nginx:V45
+          resources:
+            limits:
+              cpu: 300m
+              memory: 200Mi
+            requests:
+              cpu: 200m
+              memory: 100Mi
+          ports:
+            - containerPort: 5200
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: 5200
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5200
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+---
+# Backend service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: smart-home
+spec:
+  # ClusterIP by default
+  selector:
+    app: backend
+  ports:
+    - port: 5200
+      targetPort: 5200

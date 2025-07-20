@@ -186,19 +186,36 @@ pipeline {
                 sh "docker run -d --name grafana -p 3000:3000 --network test-net ${env.GRAFANA_IMAGE_NAME}:${env.BUILD_NUMBER}"
                 sh "sleep 20"
                 
-                    // run the test script container
-                sh """
-                    docker run --rm \
-                    --network test-net \
-                    -v "${env.WORKSPACE}:/app" \
-                    -w /app \
-                    -e FRONTEND_URL=http://frontend-container:3001 \
-                    -e BACKEND_URL=${BACKEND_URL} \
-                    yardenziv/smarthome-test-runner:latest \
-                    Smarthome-proj-backend/Test/test.py
-                """
+                // run the test script container
+                script {
+                    try {
+                        sh """
+                            docker run --rm \
+                            --network test-net \
+                            -v "${env.WORKSPACE}:/app" \
+                            -w /app \
+                            -e FRONTEND_URL=http://frontend-container:3001 \
+                            -e BACKEND_URL=${BACKEND_URL} \
+                            yardenziv/smarthome-test-runner:latest \
+                            Smarthome-proj-backend/Test/test.py
+                        """
+                    } catch (e) {
+                        echo "Test failed. Attempting to extract failed container logs..."
 
-            }
+                        if (fileExists('failed_services.txt')) {
+                            def failed = readFile('failed_services.txt').split('\n').findAll { it }
+
+                            for (container in failed) {
+                                echo "===== Logs for ${container} ====="
+                                sh "docker logs ${container} || echo 'No logs found for ${container}'"
+                            }
+                        } else {
+                            echo "failed_services.txt not found — skipping log collection."
+                        }
+
+                        throw e // rethrow to preserve pipeline failure status
+                    }
+                }
             post {
                 always {
             sh "docker rm -f backend-nginx || true"

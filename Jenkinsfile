@@ -216,6 +216,7 @@ pipeline {
                         throw e // rethrow to preserve pipeline failure status
                     }
                 }
+            }
             post {
                 always {
             sh "docker rm -f backend-nginx || true"

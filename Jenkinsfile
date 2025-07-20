@@ -9,19 +9,19 @@ pipeline {
     stages {
         stage("clone backend repo") {
             steps {
-                sh "git clone https://github.com/NadavNV/SmartHomeBackend"
+                sh "git clone https://github.com/yarden-ziv/Smarthome-proj-backend"
                 echo "Backend repo was cloned"
             }
         }
         stage("clone frontend repo") {
             steps {
-                sh "git clone https://github.com/NadavNV/SmartHomeDashboard"
+                sh "git clone https://github.com/yarden-ziv/Smarthome-proj-dashboard"
                 echo "Frontend repo was cloned"
             }
         }
         stage("clone simulator repo") {
             steps {
-                sh "git clone https://github.com/NadavNV/SmartHomeSimulator"
+                sh "git clone https://github.com/yarden-ziv/Smarthome-proj-simulator"
                 echo "simulator repo was cloned"
             }
         }
@@ -29,9 +29,9 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'mongo-creds', usernameVariable: 'MONGO_USER', passwordVariable: 'MONGO_PASS')]) {
                     sh '''
-                        echo "MONGO_USER=$MONGO_USER" > SmartHomeBackend/.env
-                        echo "MONGO_PASS=$MONGO_PASS" >> SmartHomeBackend/.env
-                        echo "BROKER_URL=mqtt-broker" >> SmartHomeBackend/.env
+                        echo "MONGO_USER=$MONGO_USER" > Smarthome-proj-backend/.env
+                        echo "MONGO_PASS=$MONGO_PASS" >> Smarthome-proj-backend/.env
+                        echo "BROKER_URL=mqtt-broker" >> Smarthome-proj-backend/.env
                     '''
                 }
             }
@@ -39,13 +39,13 @@ pipeline {
         stage("build backend images") {
             steps {
                 echo "Building the Flask backend image"
-                sh "docker build -t smarthome_backend_flask:${env.BUILD_NUMBER} -f SmartHomeBackend/flask.Dockerfile SmartHomeBackend"
+                sh "docker build -t smarthome_backend_flask:${env.BUILD_NUMBER} -f Smarthome-proj-backend/flask.Dockerfile Smarthome-proj-backend"
 
                 echo "Building clean production Nginx backend image"
-                sh "docker build -t smarthome_backend_nginx:${env.BUILD_NUMBER} -f SmartHomeBackend/nginx.Dockerfile SmartHomeBackend"
+                sh "docker build -t smarthome_backend_nginx:${env.BUILD_NUMBER} -f Smarthome-proj-backend/nginx.Dockerfile Smarthome-proj-backend"
                 
                 echo "Creating local nginx.conf for testing"
-                writeFile file: 'SmartHomeBackend/nginx.conf', text: '''
+                writeFile file: 'Smarthome-proj-backend/nginx.conf', text: '''
             server {
                 listen 5200;
 
@@ -58,17 +58,17 @@ pipeline {
         }
         '''
                 echo "Building local testing Nginx backend image"
-                sh "docker build -t smarthome_backend_nginx:${env.BUILD_NUMBER}_local -f SmartHomeBackend/nginx.Dockerfile SmartHomeBackend"
+                sh "docker build -t smarthome_backend_nginx:${env.BUILD_NUMBER}_local -f Smarthome-proj-backend/nginx.Dockerfile Smarthome-proj-backend"
             }
         }
         stage("build frontend images") {
     steps {
         echo "Building clean production frontend image"
-        sh "docker build -t ${env.FRONT_IMAGE_NAME}:${env.BUILD_NUMBER} SmartHomeDashboard"
+        sh "docker build -t ${env.FRONT_IMAGE_NAME}:${env.BUILD_NUMBER} Smarthome-proj-dashboard"
 
 
         echo "Creating local nginx.conf for testing"
-        writeFile file: 'SmartHomeDashboard/nginx.conf', text: '''
+        writeFile file: 'Smarthome-proj-dashboard/nginx.conf', text: '''
         server {
             listen 3001;
             root /usr/share/nginx/html;
@@ -78,7 +78,7 @@ pipeline {
                 try_files $uri $uri/ /index.html;
             }
             location /api/ {
-                proxy_pass http://test-container:5200;
+                proxy_pass http://backend-nginx:5200;
                 proxy_http_version 1.1;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
@@ -88,7 +88,7 @@ pipeline {
         }
         '''
         echo "Building local test image"
-        sh "docker build -t ${env.FRONT_IMAGE_NAME}_local:${env.BUILD_NUMBER} --build-arg VITE_API_URL=http://test-container:5200 SmartHomeDashboard"
+        sh "docker build -t ${env.FRONT_IMAGE_NAME}_local:${env.BUILD_NUMBER} --build-arg VITE_API_URL=http://backend-nginx:5200 Smarthome-proj-dashboard"
 
             }
         }
@@ -96,7 +96,7 @@ pipeline {
         stage("build simulator image") {
             steps {
                 echo "Building the simulator image"
-                sh "docker build -t ${env.SIM_IMAGE_NAME}:${env.BUILD_NUMBER} SmartHomeSimulator"
+                sh "docker build -t ${env.SIM_IMAGE_NAME}:${env.BUILD_NUMBER} Smarthome-proj-simulator"
             }
         }
         stage("build Grafana image") {
@@ -135,7 +135,7 @@ pipeline {
                 }
                 // run both backend containers (flask and nginx)
                 sh "docker run -d --network test-net \
-                    --env-file SmartHomeBackend/.env \
+                    --env-file Smarthome-proj-backend/.env \
                     --name backend-flask \
                     --hostname backend-flask \
                     -e BROKER_URL=mqtt-broker \
@@ -143,8 +143,8 @@ pipeline {
                     -p 8000:8000 \
                     smarthome_backend_flask:${env.BUILD_NUMBER}"
                 sh "docker run -d --network test-net \
-                    --name test-container \
-                    --hostname test-container \
+                    --name backend-nginx \
+                    --hostname backend-nginx \
                     -p 5200:5200 \
                     smarthome_backend_nginx:${env.BUILD_NUMBER}_local"
                 sh "sleep 10"
@@ -157,11 +157,11 @@ pipeline {
                             DEFAULT_IP="172.19.0.4"
                             IP=""
                             for i in $(seq 1 $MAX_RETRIES); do
-                                IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' test-container 2>/dev/null)
+                                IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' backend-nginx 2>/dev/null)
                                 if [[ -n "$IP" ]]; then
                                     break
                                 else
-                                    >&2 echo "Waiting for test-container IP... attempt $i"
+                                    >&2 echo "Waiting for backend-nginx IP... attempt $i"
                                     sleep $RETRY_DELAY
                                 fi
                             done
@@ -195,13 +195,13 @@ pipeline {
                     -e FRONTEND_URL=http://frontend-container:3001 \
                     -e BACKEND_URL=${BACKEND_URL} \
                     yardenziv/smarthome-test-runner:latest \
-                    SmartHomeBackend/Test/test.py
+                    Smarthome-proj-backend/Test/test.py
                 """
 
             }
             post {
                 always {
-            sh "docker rm -f test-container || true"
+            sh "docker rm -f backend-nginx || true"
             sh "docker rm -f backend-flask || true"
             sh "docker rm -f simulator-container || true"
             sh "docker rm -f frontend-container || true"

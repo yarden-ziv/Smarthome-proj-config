@@ -62,11 +62,11 @@ spec:
           image: prom/prometheus:latest
           resources:
             requests:
-              cpu: 100m
-              memory: 500M
+              cpu: 20m
+              memory: 200Mi
             limits:
-              cpu: 300m
-              memory: 1Gi
+              cpu: 100m
+              memory: 600Mi
           ports:
             - containerPort: 9090
           livenessProbe:

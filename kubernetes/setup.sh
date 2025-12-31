@@ -1,8 +1,11 @@
 #!/bin/bash
+set -euo pipefail
 
 NAMESPACE="smart-home"
-TIMEOUT=120
+TIMEOUT=180
 SKIP_MINIKUBE_START=0
+DO_DELETE=0
+WIPE_DATA=0
 
 # ANSI colors
 CYAN='\033[1;36m'
@@ -18,101 +21,120 @@ while [[ $# -gt 0 ]]; do
       SKIP_MINIKUBE_START=1
       shift
       ;;
+    -w|--wipe-data)
+      WIPE_DATA=1
+      shift
+      ;;
+    -d|--delete)
+      DO_DELETE=1
+      shift
+      ;;
     *)
       shift
       ;;
   esac
 done
 
-if [ "$SKIP_MINIKUBE_START" -eq 0 ]; then
+if [[ "$DO_DELETE" -eq 1 ]]; then
+  if [[ "$WIPE_DATA" -eq 1 ]]; then
+    echo -e "${YELLOW}Deleting Minikube cluster (wipe data)...${RESET}"
+    minikube delete || true
+    exit 0
+  else
+    echo -e "${YELLOW}Deleting workloads in namespace (keeping PVC data)...${RESET}"
+    kubectl delete ns "$NAMESPACE" --ignore-not-found=true
+    exit 0
+  fi
+fi
+
+if [[ "$SKIP_MINIKUBE_START" -eq 0 ]]; then
   echo -e "${CYAN}Starting Minikube...${RESET}"
   minikube start --driver=docker --memory=3072 --cpus=2
-
-  if [ $? -ne 0 ]; then
-    echo -e "${RED}Minikube failed to start. Exiting.${RESET}"
-    exit 1
-  fi
 else
   echo -e "${CYAN}Skipping Minikube start as requested.${RESET}"
 fi
 
-echo -e "${CYAN}Enabling ingress addon...${RESET}"
+echo -e "${CYAN}Enabling addons...${RESET}"
 minikube addons enable ingress
+minikube addons enable metrics-server
 
-echo -e "${CYAN}Opening tunnel to ingress controller...${RESET}"
+# Start tunnel (needed only for Services of type LoadBalancer)
+# If your dashboard-svc is LoadBalancer, keep this.
+echo -e "${CYAN}Starting minikube tunnel (for LoadBalancer services)...${RESET}"
 nohup minikube tunnel > minikube-tunnel.log 2>&1 &
 
-echo -e "${CYAN}Applying LoadBalancer and Ingress...${RESET}"
+echo -e "${CYAN}Applying namespace...${RESET}"
 kubectl apply -f 00-namespace.yaml
-kubectl apply -f 02-dashboard-svc.yaml
 
-echo -e "${YELLOW}Waiting for Minikube tunnel to assign LoadBalancer IP...${RESET}"
-sleep 2
-for i in {1..30}; do
-  if kubectl get svc --all-namespaces | grep -q 'LoadBalancer'; then
-    echo -e "${GREEN}Minikube tunnel is active.${RESET}"
-    break
-  fi
-  sleep 2
-done
+echo -e "${CYAN}Applying core services (MQTT, Mongo, Backend)...${RESET}"
+kubectl -n "$NAMESPACE" apply -f 01-mqtt-manifest.yaml
+kubectl -n "$NAMESPACE" rollout status deploy/mqtt-broker-deploy --timeout="${TIMEOUT}s"
 
-if ! kubectl get svc --all-namespaces | grep -q 'LoadBalancer'; then
-  echo -e "${RED}Tunnel did not become active. Exiting.${RESET}"
-  exit 1
-fi
+kubectl -n "$NAMESPACE" apply -f 03-mongo-manifest.yaml
+kubectl -n "$NAMESPACE" rollout status deploy/mongo --timeout="${TIMEOUT}s"
 
-echo -e "${CYAN}Applying MQTT deployment...${RESET}"
-kubectl apply -f 01-mqtt-manifest.yaml
+kubectl -n "$NAMESPACE" apply -f 04-backend-cm.yaml
+kubectl -n "$NAMESPACE" apply -f 05-backend-manifest.yaml
+kubectl -n "$NAMESPACE" rollout status deploy/backend-deploy --timeout="${TIMEOUT}s"
 
-echo -e "${YELLOW}Waiting for MQTT broker pod in '$NAMESPACE' to be ready...${RESET}"
-sleep 3
-podsReady=$(kubectl wait --namespace $NAMESPACE --for=condition=available deployment/mqtt-broker-deploy --timeout="${TIMEOUT}s" 2>&1)
+echo -e "${CYAN}Seeding devices if none exist...${RESET}"
 
-if [ $? -ne 0 ]; then
-  echo -e "${RED}Timeout or error waiting for pod to become ready:${RESET}"
-  echo "$podsReady"
-  exit 1
+IDS=$(
+  kubectl -n "$NAMESPACE" run tmp-curl --rm -i \
+    --image=curlimages/curl:8.14.1 --restart=Never \
+    --command -- sh -lc 'curl -fsS http://backend-svc:5200/api/ids' \
+  | grep -Eo '^\[.*\]' | head -n 1
+)
+
+if [[ "$IDS" == "[]" ]]; then
+  echo -e "${YELLOW}No devices found. Seeding a default door lock...${RESET}"
+  kubectl -n "$NAMESPACE" run tmp-seed --rm -i \
+    --image=curlimages/curl:8.14.1 --restart=Never \
+    --command -- sh -lc 'curl -fsS -X POST http://backend-svc:5200/api/devices \
+      -H "Content-Type: application/json" \
+      -d "{\"id\":\"1\",\"name\":\"Front Door\",\"room\":\"Entrance\",\"type\":\"door_lock\",\"status\":\"unlocked\",\"parameters\":{\"auto_lock_enabled\":false}}"' \
+    >/dev/null
+  echo -e "${GREEN}Seed done.${RESET}"
 else
-  echo -e "${GREEN}MQTT broker is ready. Proceeding...${RESET}"
+  echo -e "${GREEN}Devices already exist: $IDS. Skipping seed.${RESET}"
 fi
 
-echo -e "${CYAN}Applying backend Kubernetes manifests in order...${RESET}"
-kubectl apply -f 03-mongo-secrets.yaml
-kubectl apply -f 04-backend-cm.yaml
-kubectl apply -f 05-backend-manifest.yaml
+echo -e "${CYAN}Applying app components (simulator, dashboard svc+deploy)...${RESET}"
+kubectl -n "$NAMESPACE" apply -f 02-dashboard-svc.yaml
+kubectl -n "$NAMESPACE" apply -f 06-simulator-deployment.yaml
+kubectl -n "$NAMESPACE" apply -f 07-dashboard-deployment.yaml
 
-echo -e "${YELLOW}Waiting for all backend pods in '$NAMESPACE' to be ready...${RESET}"
-sleep 3
-podsReady=$(kubectl wait --namespace $NAMESPACE --for=condition=available deployment/backend-deploy --timeout="${TIMEOUT}s" 2>&1)
+kubectl -n "$NAMESPACE" rollout status deploy/simulator-deploy --timeout="${TIMEOUT}s"
+kubectl -n "$NAMESPACE" rollout status deploy/dashboard-deploy --timeout="${TIMEOUT}s"
 
-if [ $? -ne 0 ]; then
-  echo -e "${RED}Timeout or error waiting for pods to become ready:${RESET}"
-  echo "$podsReady"
-  exit 1
+echo -e "${CYAN}Applying monitoring (node-exporter, kube-state-metrics, prometheus, grafana)...${RESET}"
+kubectl -n "$NAMESPACE" apply -f 11-node-exporter-manifest.yaml
+kubectl -n "$NAMESPACE" rollout status ds/node-exporter --timeout="${TIMEOUT}s"
+
+kubectl -n "$NAMESPACE" apply -f 12-kube-state-metrics.yaml
+kubectl -n "$NAMESPACE" rollout status deploy/kube-state-metrics --timeout="${TIMEOUT}s"
+
+kubectl -n "$NAMESPACE" apply -f 08-prometheus-cm.yaml
+kubectl -n "$NAMESPACE" apply -f 09-prometheus-manifest.yml
+kubectl -n "$NAMESPACE" rollout status deploy/prometheus --timeout="${TIMEOUT}s"
+
+kubectl -n "$NAMESPACE" apply -f 10-grafana-manifest.yaml
+kubectl -n "$NAMESPACE" rollout status deploy/grafana --timeout="${TIMEOUT}s"
+
+echo -e "${GREEN}All core components applied. Current pod status:${RESET}"
+kubectl -n "$NAMESPACE" get pods -o wide
+
+echo -e "${CYAN}Dashboard access:${RESET}"
+# If dashboard-svc is LoadBalancer and tunnel is running, this may work:
+EXTERNAL_IP=$(kubectl -n "$NAMESPACE" get svc dashboard-svc -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+if [[ -n "${EXTERNAL_IP:-}" ]]; then
+  echo -e "${GREEN}dashboard-svc LoadBalancer IP: ${EXTERNAL_IP}${RESET}"
 else
-  echo -e "${GREEN}All backend pods are ready. Proceeding...${RESET}"
+  echo -e "${YELLOW}No LoadBalancer IP yet. Opening dashboard service via minikube...${RESET}"
+  minikube service -n "$NAMESPACE" dashboard-svc
 fi
 
-echo -e "${CYAN}Applying all manifests in the current directory...${RESET}"
-kubectl apply -f .
+echo -e "${CYAN}Grafana access:${RESET}"
+echo -e "${YELLOW}Run: minikube service -n ${NAMESPACE} grafana-svc --url${RESET}"
 
-echo -e "${YELLOW}Waiting for the rest of the pods in '$NAMESPACE' to be ready...${RESET}"
-sleep 3
-podsReady=$(kubectl wait deployment --all --namespace "$NAMESPACE" --for=condition=available --timeout=${TIMEOUT}s 2>&1)
-
-if [ $? -ne 0 ]; then
-  echo -e "${RED}Timeout or error waiting for pods readiness:${RESET}"
-  echo "$podsReady"
-  exit 1
-else
-  echo -e "${GREEN}All pods in '$NAMESPACE' are ready.${RESET}"
-fi
-
-EXTERNAL_IP=$(kubectl get svc dashboard-svc -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-if [ -z "$EXTERNAL_IP" ]; then
-  echo -e "${YELLOW}LoadBalancer external IP not assigned yet. Opening service...${RESET}"
-  minikube service -n $NAMESPACE dashboard-svc
-else
-  echo -e "${CYAN}External IP: $EXTERNAL_IP${RESET}"
-  echo -e "\n${GREEN}*** Done! ***${RESET}\n"
-fi
+echo -e "\n${GREEN}*** Done! ***${RESET}\n"

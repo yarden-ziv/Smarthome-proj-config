@@ -45,6 +45,7 @@ As well as monitoring and CI/CD (in this repository).
     ```
   - Use `-s` to skip starting minikube, if it is already running.
   - Access the dashboard on your browser at `smart-home-dashboard.local`
-  - To view the monitoring through grafana run `minikube service -n smart-home smart-home-grafana-svc` and log in using username: `admin`, password: `admin`.
+  - To view the monitoring through grafana run `minikube service -n smart-home grafana-svc` 
+    and log in using username: `admin`, password: `admin`.
 
 - To run the different microservices locally, please refer to their individual README files.

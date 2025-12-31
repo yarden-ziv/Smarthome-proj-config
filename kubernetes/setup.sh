@@ -66,7 +66,7 @@ kubectl apply -f 01-mqtt-manifest.yaml
 
 echo -e "${YELLOW}Waiting for MQTT broker pod in '$NAMESPACE' to be ready...${RESET}"
 sleep 3
-$podsReady=$(kubectl wait --namespace $NAMESPACE --for=condition=available deployment/mqtt-broker-deploy --timeout="${TIMEOUT}s" 2>&1)
+podsReady=$(kubectl wait --namespace $NAMESPACE --for=condition=available deployment/mqtt-broker-deploy --timeout="${TIMEOUT}s" 2>&1)
 
 if [ $? -ne 0 ]; then
   echo -e "${RED}Timeout or error waiting for pod to become ready:${RESET}"

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: backend-flask-container
-          image: yardenziv/smarthome_backend_flask:V45
+          image: yardenziv/smarthome_backend_flask:V50
           resources:
             limits:
               cpu: 300m
@@ -26,16 +26,14 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            - name: MONGO_USER
-              valueFrom:
-                secretKeyRef:
-                  key: MONGO_USER
-                  name: mongo-secrets
-            - name: MONGO_PASS
-              valueFrom:
-                secretKeyRef:
-                  key: MONGO_PASS
-                  name: mongo-secrets
+            - name: MONGO_URI
+              value: mongodb://mongo:27017/smart_home
+            - name: MONGO_HOST
+              value: mongo
+            - name: MONGO_PORT
+              value: "27017"
+            - name: MONGO_DB
+              value: smarthome
             - name: BROKER_URL
               valueFrom:
                 configMapKeyRef:
@@ -46,6 +44,12 @@ spec:
                 configMapKeyRef:
                   name: mqtt-broker-cm
                   key: BROKER_PORT
+          startupProbe:
+            httpGet:
+              path: /healthy
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthy
